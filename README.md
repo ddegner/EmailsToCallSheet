@@ -1,5 +1,5 @@
 # EmailsToCallSheet
-A Draft AppleScript that takes a highlighted email thread, extracts the important information for a project, and creates a new Draft out of it.
+A Drafts Action that takes a selected email thread/conversation, uses AI to extracts the important information for a project, and creates a new Draft in the format of a Call Sheet.
 
 ## Overview
 
