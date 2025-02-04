@@ -1,9 +1,3 @@
--- Email Thread Processor for Drafts
--- This AppleScript runs as an action in the Drafts app it processes selected email threads from Mail,
--- pulls out the imporant information using OpenAI's GPT-4o, creates a new draft in the Drafts app with the
--- extracted information and original thread content, and includes links to each original message in the Mail app.
--- It runs on a modern MacOS with a bit of Python3.
-
 use framework "Foundation"
 use scripting additions
 
@@ -11,7 +5,7 @@ use scripting additions
 on removeQuotedText(emailBody)
     set nsEmailBody to current application's NSString's stringWithString:emailBody
     -- Regular expression patterns to match quoted text
-    set patterns to {"(?m)^(>.*)$", "(?s)^On .*? wrote:.*", "(?m)^-----Original Message-----.*", "(?m)^From:.*", "(?m)^Sent:.*", "(?m)^To:.*", "(?m)^Subject:.*"}
+    set patterns to {"(?m)^(>.*)$", "(?m)^-----Original Message-----.*", "(?m)^From:.*", "(?m)^Sent:.*", "(?m)^To:.*", "(?m)^Subject:.*"}
     repeat with pattern in patterns
         set regex to current application's NSRegularExpression's regularExpressionWithPattern:pattern options:0 |error|:(missing value)
         set nsEmailBody to regex's stringByReplacingMatchesInString:nsEmailBody options:0 range:{0, nsEmailBody's |length|()} withTemplate:""
@@ -150,19 +144,32 @@ end callOpenAIAPI
 on execute()
     try
         tell application "Mail"
-            -- Get the selected messages from Mail
-            set selectedMessages to selection
-            if selectedMessages is {} then
+            -- Get the related messages using the new method
+            if not (exists message viewer 1) then
+                display alert "No message viewer" message "Please open Mail and select a message." buttons {"OK"} default button "OK"
+                return
+            end if
+            
+            set theRef to (selected messages of message viewer 1)
+            if theRef is {} then
                 display alert "No email selected" message "Please select an email thread." buttons {"OK"} default button "OK"
                 return
             end if
-
+            
+            set {theSender, theSubject} to {sender, subject} of first item of theRef
+            if theSubject starts with "Re: " or theSubject starts with "Réf : " then
+                set AppleScript's text item delimiters to {"Re: ", "Réf : "}
+                set theSubject to last text item of theSubject
+            end if
+            
+            set relatedMessages to messages of message viewer 1 where all headers contains theSender and all headers contains theSubject
+            
             -- Sort the messages by date received
-            set sortedMessages to my sortMessagesByDate(selectedMessages)
-
+            set sortedMessages to my sortMessagesByDate(relatedMessages)
+            
             -- Initialize variables for thread content
             set threadContent to ""
-
+            
             -- Process the messages in sorted order
             repeat with eachMessage in sortedMessages
                 -- Get email details
@@ -170,13 +177,13 @@ on execute()
                 set emailSubject to subject of eachMessage
                 set emailDate to date received of eachMessage
                 set emailBody to content of eachMessage
-
+                
                 -- Remove quoted text
                 set cleanedBody to my removeQuotedText(emailBody)
-
+                
                 -- Create and add the message link
                 set messageLink to my createMessageLink(eachMessage)
-
+                
                 -- Append email details to threadContent
                 set threadContent to threadContent & "From: " & emailSender & " / Subject: " & emailSubject & " / Date: " & emailDate & linefeed & cleanedBody & linefeed & "Message Link: " & messageLink & linefeed & "---" & linefeed & linefeed
             end repeat
@@ -231,9 +238,7 @@ SPECIAL REQUIREMENTS:
 Mention any additional or unique requirements related to the shoot (e.g., equipment, props, permits, travel arrangements).
 
 EXTRA NOTES:
-Capture any additional information, such as meeting schedules, important discussions, or extra tasks.
-
-Make sure the project title appears as the first line without a label, and the remaining sections follow with clear headings and spacing."
+Capture any additional information, such as meeting schedules, important discussions, or extra tasks."
 
         set fullPrompt to promptText & linefeed & linefeed & "Email Thread Content:" & linefeed & threadContent
 
