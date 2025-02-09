@@ -149,27 +149,27 @@ on execute()
                 display alert "No message viewer" message "Please open Mail and select a message." buttons {"OK"} default button "OK"
                 return
             end if
-            
+
             set theRef to (selected messages of message viewer 1)
             if theRef is {} then
                 display alert "No email selected" message "Please select an email thread." buttons {"OK"} default button "OK"
                 return
             end if
-            
+
             set {theSender, theSubject} to {sender, subject} of first item of theRef
             if theSubject starts with "Re: " or theSubject starts with "Réf : " then
                 set AppleScript's text item delimiters to {"Re: ", "Réf : "}
                 set theSubject to last text item of theSubject
             end if
-            
+
             set relatedMessages to messages of message viewer 1 where all headers contains theSender and all headers contains theSubject
-            
+
             -- Sort the messages by date received
             set sortedMessages to my sortMessagesByDate(relatedMessages)
-            
+
             -- Initialize variables for thread content
             set threadContent to ""
-            
+
             -- Process the messages in sorted order
             repeat with eachMessage in sortedMessages
                 -- Get email details
@@ -177,13 +177,13 @@ on execute()
                 set emailSubject to subject of eachMessage
                 set emailDate to date received of eachMessage
                 set emailBody to content of eachMessage
-                
+
                 -- Remove quoted text
                 set cleanedBody to my removeQuotedText(emailBody)
-                
+
                 -- Create and add the message link
                 set messageLink to my createMessageLink(eachMessage)
-                
+
                 -- Append email details to threadContent
                 set threadContent to threadContent & "From: " & emailSender & " / Subject: " & emailSubject & " / Date: " & emailDate & linefeed & cleanedBody & linefeed & "Message Link: " & messageLink & linefeed & "---" & linefeed & linefeed
             end repeat
