@@ -1,19 +1,68 @@
+-- SUMMARY: This script processes an email thread from Mail.app to create a call sheet using the Gemini API.
+-- It extracts relevant information from the emails based on predefined categories (like Client Information, Project Timeline, Location, Budget, etc.), reconstructs the email thread into a chronologically ordered conversation, and generates a markdown-formatted call sheet.
+-- The output is then saved as a new draft in the Drafts app with a specified tag.
+-- The script requires a Gemini API key stored in Keychain and uses Python to interact with the Gemini API.
+
 use framework "Foundation"
 use scripting additions
 
--- Function to remove quoted text from an email body
-on removeQuotedText(emailBody)
-    set nsEmailBody to current application's NSString's stringWithString:emailBody
-    -- Regular expression patterns to match quoted text
-    set patterns to {"(?m)^(>.*)$", "(?m)^-----Original Message-----.*", "(?m)^From:.*", "(?m)^Sent:.*", "(?m)^To:.*", "(?m)^Subject:.*"}
-    repeat with pattern in patterns
-        set regex to current application's NSRegularExpression's regularExpressionWithPattern:pattern options:0 |error|:(missing value)
-        set nsEmailBody to regex's stringByReplacingMatchesInString:nsEmailBody options:0 range:{0, nsEmailBody's |length|()} withTemplate:""
-    end repeat
-    return nsEmailBody as string
-end removeQuotedText
+-- *** USER-ADJUSTABLE VARIABLES ***
+property geminiAPIKeyName : "Gemini_API_Key" -- Name of the API key in Keychain
+property geminiModel : "gemini-2.0-flash"   -- Gemini model to use (e.g., "gemini-1.5-pro-002", "gemini-2.0-flash")
+property draftsTag : "1 commercial"            -- Tag to apply to the new draft in Drafts
+property prompt_intro : "You are a highly skilled administrative assistant. Your task is to create a markdown call sheet for photographer David Degner.  Extract all relevant project details from the following email thread with his client to populate the call sheet sections below.
 
--- Function to replace characters in a string
+Formatting Instructions:
+
+Format the call sheet in markdown.
+The first line should be the project title (markdown title format).
+Include markdown headings for each of the sections listed below.
+For sections with no information from the email thread, include only the heading and leave the content blank.
+Do not include information not explicitly stated in the email thread.
+Omit conversational pleasantries and sign-offs.
+Do NOT use HTML; use markdown for all text formatting.
+Section Headings and Information to Extract:
+
+CLIENT INFORMATION:  List the client or company name, main contact person (and their role, if mentioned), and relevant contact details (email, phone) directly, without labels.
+
+AGENCY: Mention the agency name and contact information if an agency is involved.
+
+PROJECT TIMELINE: Extract and list all relevant dates mentioned in the email, such as deadlines, shoot dates, and delivery timelines.
+
+LOCATION: Specify the photography location or client address.
+
+PROJECT DESCRIPTION: Summarize the project's key objectives, scope, and any mentioned style, goals, or focus areas.
+
+ART DIRECTION: Highlight any art direction, stylistic direction, or creative requirements.
+
+DELIVERABLES: List all required outputs (images, photos, reports, videos) with quantity, format, and deadlines.
+
+BUDGET:  Extract all mentions of budgets, costs, fees, or pricing.  Include estimates, quotes, rates, and any monetary values (e.g., '$500', 'USD', 'total cost').  Capture all financial details, even if implied or indirect. Look for keywords like 'budget', 'cost', 'estimate', 'fee', 'pricing', 'cost breakdown', 'quote', 'rate'.
+
+TEAM AND ROLES: Identify all mentioned team members and their roles.
+
+LICENSING AND USAGE RIGHTS: Include details about licensing terms and usage rights agreements.
+
+REVISIONS OR FEEDBACK: Extract details about revision rounds, feedback, and client approval processes.
+
+SPECIAL REQUIREMENTS: Mention any special requirements (equipment, props, permits, travel, etc.).
+
+EXTRA NOTES: Capture any additional relevant information, such as meeting schedules, discussions, or extra tasks."
+
+
+property conversation_prompt_intro : "Please reconstruct the following emails into a coherent email thread, presenting the messages in the correct chronological order.  Remove any redundent quoted text or redundant email signatures.  For each message, please include the sender's name, the date, and the time the message was sent, followed by the message content.  Format each message in markdown like this:
+
+**From:** Sender Name, Date of message, Time of message
+
+Message Content
+
+---
+
+Email Thread Content:"
+
+-- *** END USER-ADJUSTABLE VARIABLES ***
+
+-- Function to replace characters in a string (Not strictly necessary, but kept for now)
 on replace_chars(theText, searchString, replacementString)
     set AppleScript's text item delimiters to searchString
     set theItems to text items of theText
@@ -94,8 +143,8 @@ on sortMessagesByDate(messageList)
     return sortedMessages
 end sortMessagesByDate
 
--- Function to call OpenAI API using Python
-on callOpenAIAPI(apiKey, promptFilePath)
+-- Function to call Gemini API using Python (Corrected quotes and error handling)
+on callGeminiAPI(apiKey, promptFilePath)
     set pythonScript to "
 import json
 import urllib.request
@@ -107,44 +156,70 @@ api_key = '" & apiKey & "'
 with open('" & promptFilePath & "', 'r', encoding='utf-8') as f:
     prompt = f.read()
 
-messages = [
-    {\"role\": \"user\", \"content\": prompt}
-]
+url = f'https://generativelanguage.googleapis.com/v1beta/models/" & geminiModel & ":generateContent?key={api_key}'
 
 payload = {
-    \"model\": \"gpt-4o\",
-    \"messages\": messages
+    \"contents\": [{
+        \"parts\": [{\"text\": prompt}]
+    }]
 }
+headers = {'Content-Type': 'application/json'}
 
-headers = {
-    \"Content-Type\": \"application/json\",
-    \"Authorization\": f\"Bearer {api_key}\"
-}
-
-req = urllib.request.Request(\"https://api.openai.com/v1/chat/completions\", data=json.dumps(payload).encode('utf-8'), headers=headers)
+req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
 
 try:
     with urllib.request.urlopen(req) as response:
-        result = json.loads(response.read())
-        print(result['choices'][0]['message']['content'])
+        result_json = json.loads(response.read().decode('utf-8'))
+        # Extract text from the response, handling potential errors
+        if 'candidates' in result_json and result_json['candidates']:
+            first_candidate = result_json['candidates'][0]
+            if 'content' in first_candidate and 'parts' in first_candidate['content']:
+                parts = first_candidate['content']['parts']
+                if parts and parts[0]['text']:
+                    print(parts[0]['text'])
+                else:
+                    print(\"Error: Text content not found in API response.\", file=sys.stderr)
+                    sys.exit(1)  # Exit with an error code
+            else:
+                print(\"Error: 'content' or 'parts' key not found in API response candidate.\", file=sys.stderr)
+                sys.exit(1)  # Exit with an error code
+        else:
+            print(\"Error: 'candidates' key not found or empty in API response.\", file=sys.stderr)
+            sys.exit(1)  # Exit with an error code
+
+
 except urllib.error.HTTPError as e:
     error_info = e.read().decode('utf-8')
-    print(f\"API request failed: {error_info}\")
-    sys.exit(1)
+    print(f\"API request failed (HTTP Error): {e.code} - {error_info}\", file=sys.stderr)
+    sys.exit(e.code)  # Exit with the HTTP error code
+
+except Exception as e:
+    print(f\"An unexpected error occurred: {e}\", file=sys.stderr)
+    sys.exit(1) # Exit with a generic error code
+
 "
     try
         set apiResponse to do shell script "/usr/bin/python3 -c " & quoted form of pythonScript
+        set exitCode to (do shell script "echo $?") as integer -- Get the exit code
+
+        if exitCode is not 0 then
+            display alert "API Error" message "The Gemini API request failed.  Details:\n" & apiResponse buttons {"OK"} default button "OK"
+            return "" -- Or some other error indicator
+        end if
         return apiResponse
-    on error errMsg
-        return errMsg
+
+    on error errMsg number errNum
+        display alert "Python Script Error" message "An error occurred in the Python script:\n" & errMsg & " (Error " & errNum & ")"
+        return ""  -- Or some other error indicator
     end try
-end callOpenAIAPI
+end callGeminiAPI
+
 
 -- Function to execute the main script
 on execute()
     try
         tell application "Mail"
-            -- Get the related messages using the new method
+            -- Get the related messages
             if not (exists message viewer 1) then
                 display alert "No message viewer" message "Please open Mail and select a message." buttons {"OK"} default button "OK"
                 return
@@ -178,94 +253,63 @@ on execute()
                 set emailDate to date received of eachMessage
                 set emailBody to content of eachMessage
 
-                -- Remove quoted text
-                set cleanedBody to my removeQuotedText(emailBody)
+                -- cleanedBody is now simply emailBody (no preprocessing)
+                set cleanedBody to emailBody
 
                 -- Create and add the message link
                 set messageLink to my createMessageLink(eachMessage)
 
-                -- Append email details to threadContent
-                set threadContent to threadContent & "From: " & emailSender & " / Subject: " & emailSubject & " / Date: " & emailDate & linefeed & cleanedBody & linefeed & "Message Link: " & messageLink & linefeed & "---" & linefeed & linefeed
+                -- Append email details to threadContent (Corrected line break)
+                set threadContent to threadContent & "From: " & emailSender & " / Subject: " & emailSubject & " / Date: " & emailDate & linefeed & cleanedBody & linefeed & linefeed & "Message Link: " & messageLink & linefeed & "---" & linefeed & linefeed
             end repeat
         end tell
 
-        -- Combine the prompt and the thread content
-        set promptText to "I am David Degner, the photographer, and this is an email thread with my client. Please extract the following information from the email thread for me. Focus on the most relevant and clear information for each section, using explicit details mentioned in the emails.
+        -- --- Conversation Reconstruction ---
+        set fullConversationPrompt to conversation_prompt_intro & linefeed & threadContent
 
-Ensure that all detailed information is included and is accurate.
+        -- Generate a unique temporary file path for conversation prompt
+        set conversationPromptFilePath to do shell script "mktemp /tmp/email_conversation_prompt.XXXXXX"
+        -- Write the full conversation prompt to the temporary file
+        my writeToFile(fullConversationPrompt, conversationPromptFilePath)
 
-Here is the format to follow:
+        -- Retrieve the Gemini API key from Keychain
+        set geminiAPIKey to my getAPIKeyFromKeychain(geminiAPIKeyName)
+        if geminiAPIKey is missing value then
+            display alert "API Key Not Found" message "Please store your Gemini API Key in the Keychain with the key name '" & geminiAPIKeyName & "'." buttons {"OK"} default button "OK"
+            return
+        end if
 
-- Format in markdown
-- The first line should be the project title, written directly without a heading.
-- Subsequent sections should include a heading.
-- If a section has no relevant information only write the heading and leave the section blank.
+        -- Use Python3 to make the API request to Gemini for conversation reconstruction
+        set reconstructedConversationResponse to my callGeminiAPI(geminiAPIKey, conversationPromptFilePath)
+        if reconstructedConversationResponse starts with "API request failed:" or reconstructedConversationResponse starts with "Error:" then
+            display alert "API Error (Conversation Reconstruction)" message reconstructedConversationResponse buttons {"OK"} default button "OK"
+            return
+        end if
+        set reconstructedConversation to reconstructedConversationResponse
 
-CLIENT INFORMATION:
-Include the client or company requesting the work, with their main contact and role if available and relevant contact details such as email or phone numbers. Do not label each piece of information.
 
-AGENCY:
-Mention any agency or intermediary company involved, if applicable, including their name and relevant contact information.
+        -- --- Information Extraction ---
 
-PROJECT TIMELINE:
-Extract relevant dates, including deadlines, shoot dates, or delivery timelines.
+        set fullPrompt to prompt_intro & linefeed & linefeed & "Email Thread Content:" & linefeed & threadContent
 
-LOCATION:
-Where exactly will the photography take place or what is the address of the client.
-
-PROJECT DESCRIPTION:
-Summarize the key objectives and scope of the project. Include any style, goals, or focus areas mentioned.
-
-ART DIRECTION:
-Highlight any references to stylistic direction, art direction, or creative requirements.
-
-DELIVERABLES:
-List the required outputs, such as final images, edited photos, reports, or videos. Include quantity, format, and deadlines.
-
-BUDGET:
-Extract all mentions of costs, estimates, or budgets. Look for terms such as 'budget', 'cost', 'estimate', 'fee', 'pricing', 'cost breakdown', 'quote', 'rate', or any mention of monetary values (e.g., '$500', 'USD', 'total cost'). Ensure every detail about finances is captured, even if mentioned indirectly.
-
-TEAM AND ROLES:
-Identify any other team members mentioned (e.g., assistants, models, makeup artists) and their roles.
-
-LICENSING AND USAGE RIGHTS:
-Include any mentions of licensing terms, usage rights, or agreements on how the photos will be used.
-
-REVISIONS OR FEEDBACK:
-Extract any details regarding rounds of revisions, feedback processes, or client approval steps.
-
-SPECIAL REQUIREMENTS:
-Mention any additional or unique requirements related to the shoot (e.g., equipment, props, permits, travel arrangements).
-
-EXTRA NOTES:
-Capture any additional information, such as meeting schedules, important discussions, or extra tasks."
-
-        set fullPrompt to promptText & linefeed & linefeed & "Email Thread Content:" & linefeed & threadContent
-
-        -- Generate a unique temporary file path
+        -- Generate a unique temporary file path for main prompt
         set promptFilePath to do shell script "mktemp /tmp/email_processor_prompt.XXXXXX"
 
-        -- Write the full prompt to the temporary file using the updated writeToFile function
+        -- Write the full prompt to the temporary file
         my writeToFile(fullPrompt, promptFilePath)
 
-        -- Retrieve the OpenAI API key from Keychain
-        set openAIAPIKey to my getAPIKeyFromKeychain("OpenAI_API_Key")
-        if openAIAPIKey is missing value then
-            display alert "API Key Not Found" message "Please store your OpenAI API Key in the Keychain." buttons {"OK"} default button "OK"
+        -- Use Python3 to make the API request to Gemini for information extraction
+        set apiResponse to my callGeminiAPI(geminiAPIKey, promptFilePath)  -- Re-use geminiAPIKey
+        if apiResponse starts with "API request failed:" or apiResponse starts with "Error:" then
+            display alert "API Error (Information Extraction)" message apiResponse buttons {"OK"} default button "OK"
             return
         end if
 
-        -- Use Python3 to make the API request
-        set apiResponse to my callOpenAIAPI(openAIAPIKey, promptFilePath)
-        if apiResponse starts with "API request failed:" then
-            display alert "API Error" message apiResponse buttons {"OK"} default button "OK"
-            return
-        end if
-
-        -- Create a new draft in Drafts app with the extracted information and original thread content
+        -- Create a new draft in Drafts app
         tell application "Drafts"
-            set fullContent to my replace_chars(apiResponse, return, linefeed) & linefeed & linefeed & "------------------" & linefeed & my replace_chars(threadContent, "return", linefeed)
-            make new draft with properties {content:fullContent, flagged:false, tags:{"1 commercial"}}
+            set fullContent to "" & my replace_chars(apiResponse, return, linefeed) & linefeed & linefeed & "------------------------------------
+" & reconstructedConversation
+            make new draft with properties {content:fullContent, flagged:false, tags:{draftsTag}}  -- Use draftsTag variable
         end tell
 
     on error errMsg number errNum
