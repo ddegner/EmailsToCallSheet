@@ -1,4 +1,4 @@
--- SUMMARY: This script processes an email thread from Mail.app to create a call sheet using the Gemini API.
+-- SUMMARY: This script processes an email thread from Mail.app to create a call sheet using the Gemini API and create a Draft in the Drafts app.
 -- It extracts relevant information from the emails based on predefined categories (like Client Information, Project Timeline, Location, Budget, etc.), reconstructs the email thread into a chronologically ordered conversation, and generates a markdown-formatted call sheet.
 -- The output is then saved as a new draft in the Drafts app with a specified tag.
 -- The script requires a Gemini API key stored in Keychain and uses Python to interact with the Gemini API.
