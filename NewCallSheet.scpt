@@ -1,8 +1,9 @@
+use framework "Foundation"
 use scripting additions
 
 -- *** USER-ADJUSTABLE VARIABLES ***
 property geminiAPIKeyName : "Gemini_API_Key" -- Name of the API key in Keychain
-property geminiModel : "gemini-2.5-pro" -- Gemini model to use (e.g., "gemini-2.5-pro", "gemini-2.5-flash")
+property geminiModel : "gemini-2.5-pro" -- Gemini model to use (e.g., "gemini-2.5-pro-exp-03-25", "gemini-2.0-flash")
 property draftsTags : {"callsheet"} -- Multiple tags to apply to the new draft in Drafts
 property prompt_intro : "You are a highly skilled administrative assistant. Your task is to create a markdown call sheet for photographer David Degner.  Extract all relevant project details from the following email thread with his client to populate the call sheet sections below.
 
@@ -54,109 +55,20 @@ on replace_chars(theText, searchString, replacementString)
 	return theText
 end replace_chars
 
--- Helper to truncate long text blocks to avoid oversized prompts
-on truncateText(someText, maxChars)
-	try
-		set textLength to (length of someText)
-		if textLength ≤ maxChars then return someText
-		set truncated to (text 1 thru maxChars of someText)
-		return truncated & linefeed & "[... truncated ...]"
-	on error
-		return someText
-	end try
-end truncateText
+-- Helper function to trim whitespace from a string
+on trim(someText)
+	set nsText to current application's NSString's stringWithString:someText
+	set trimmedText to nsText's stringByTrimmingCharactersInSet:(current application's NSCharacterSet's whitespaceAndNewlineCharacterSet())
+	return trimmedText as string
+end trim
 
--- Locate pdftotext in common install paths or PATH
-on getPdftotextPath()
-	try
-		set cmdPath to do shell script "/usr/bin/which pdftotext || true"
-		if cmdPath is not "" then return cmdPath
-	on error
-		-- ignore
-	end try
-	try
-		set brewAppleSilicon to "/opt/homebrew/bin/pdftotext"
-		if (do shell script "/bin/test -x " & quoted form of brewAppleSilicon & " && echo ok || true") is "ok" then return brewAppleSilicon
-	on error
-		-- ignore
-	end try
-	try
-		set brewIntel to "/usr/local/bin/pdftotext"
-		if (do shell script "/bin/test -x " & quoted form of brewIntel & " && echo ok || true") is "ok" then return brewIntel
-	on error
-		-- ignore
-	end try
-	return ""
-end getPdftotextPath
-
--- Extract plain text from a PDF at the given POSIX path using the pdftotext CLI
-on extractTextFromPDF(pdfPOSIXPath)
-	try
-		set pdftotextPath to my getPdftotextPath()
-		if pdftotextPath is "" then return ""
-		-- Create a temp output file
-		set outPath to do shell script "mktemp /tmp/pdftotext_out.XXXXXX"
-		-- Use pdftotext to extract text with layout preserved where possible
-		try
-			do shell script quoted form of pdftotextPath & " -layout -nopgbrk " & quoted form of pdfPOSIXPath & space & quoted form of outPath
-		on error
-			-- Fallback to basic extraction
-			do shell script quoted form of pdftotextPath & space & quoted form of pdfPOSIXPath & space & quoted form of outPath
-		end try
-		set extracted to do shell script "/bin/cat " & quoted form of outPath & " | /usr/bin/sed -e 's/\r$//'"
-		-- Clean up temp file
-		do shell script "rm -f " & quoted form of outPath
-		return extracted
-	on error
-		return ""
-	end try
-end extractTextFromPDF
-
--- For a Mail message, save all PDF attachments to a temp dir and return combined extracted text
-on extractPDFsFromMessage(theMessage, attachmentsTempDir)
-	tell application "Mail"
-		set attList to mail attachments of theMessage
-	end tell
-	set combined to ""
-	repeat with att in attList
-		set attName to ""
-		set attType to ""
-		tell application "Mail"
-			try
-				set attName to name of att
-			end try
-			try
-				set attType to mime type of att
-			on error
-				try
-					set attType to content type of att
-				on error
-					set attType to ""
-				end try
-			end try
-		end tell
-		set isPDF to false
-		if attName is not "" then
-			ignoring case
-				if attName ends with ".pdf" then set isPDF to true
-			end ignoring
-		end if
-		if attType is not "" and attType contains "pdf" then set isPDF to true
-		if isPDF then
-			set safeName to my replace_chars(attName, "/", "_")
-			set savePath to attachmentsTempDir & "/" & safeName
-			tell application "Mail"
-				save att in POSIX file savePath
-			end tell
-			set extracted to my extractTextFromPDF(savePath)
-			set extractedTrimmed to my truncateText(extracted, 40000)
-			if extractedTrimmed is not "" then
-				set combined to combined & "Attachment (PDF): " & attName & linefeed & extractedTrimmed & linefeed & linefeed
-			end if
-		end if
-	end repeat
-	return combined
-end extractPDFsFromMessage
+-- Helper function to URL-encode a string
+on urlEncode(inputString)
+	set NSString to current application's NSString's stringWithString:inputString
+	set allowedChars to current application's NSCharacterSet's URLQueryAllowedCharacterSet()
+	set encodedString to NSString's stringByAddingPercentEncodingWithAllowedCharacters:allowedChars
+	return encodedString as string
+end urlEncode
 
 -- Function to create a message link for a given message
 on createMessageLink(theMessage)
@@ -169,10 +81,12 @@ on createMessageLink(theMessage)
 	return markdownLink
 end createMessageLink
 
--- Function to write text to a file (UTF-8)
+-- Function to write text to a file using ASObjC
 on writeToFile(theText, theFilePath)
 	try
-		do shell script "/usr/bin/printf %s " & quoted form of theText & " > " & quoted form of theFilePath
+		set theNSString to current application's NSString's stringWithString:theText
+		set theNSData to theNSString's dataUsingEncoding:(current application's NSUTF8StringEncoding)
+		theNSData's writeToFile:theFilePath atomically:true
 		return true
 	on error errMsg
 		display alert "Failed to write to file: " & errMsg
@@ -269,11 +183,19 @@ except Exception as e:
 "
 	try
 		set apiResponse to do shell script "/usr/bin/python3 -c " & quoted form of pythonScript
+		set exitCode to (do shell script "echo $?") as integer -- Get the exit code
+		
+		if exitCode is not 0 then
+			display alert "API Error" message "The Gemini API request failed.  Details:
+" & apiResponse buttons {"OK"} default button "OK"
+			return "" -- Or some other error indicator
+		end if
 		return apiResponse
+		
 	on error errMsg number errNum
 		display alert "Python Script Error" message "An error occurred in the Python script:
 " & errMsg & " (Error " & errNum & ")"
-		return ""
+		return "" -- Or some other error indicator
 	end try
 end callGeminiAPI
 
@@ -281,8 +203,6 @@ end callGeminiAPI
 -- Function to execute the main script
 on execute()
 	try
-		-- Create a temp directory for saving PDF attachments during processing
-		set attachmentsTempDir to do shell script "mktemp -d /tmp/callsheet_attachments.XXXXXX"
 		tell application "Mail"
 			-- Get the related messages
 			if not (exists message viewer 1) then
@@ -297,7 +217,7 @@ on execute()
 			end if
 			
 			set {theSender, theSubject} to {sender, subject} of first item of theRef
-			if theSubject begins with "Re: " or theSubject begins with "Réf : " then
+			if theSubject starts with "Re: " or theSubject starts with "Réf : " then
 				set AppleScript's text item delimiters to {"Re: ", "Réf : "}
 				set theSubject to last text item of theSubject
 			end if
@@ -321,14 +241,11 @@ on execute()
 				-- cleanedBody is now simply emailBody (no preprocessing)
 				set cleanedBody to emailBody
 				
-				-- Extract any PDF attachments' text
-				set pdfAttachmentsText to my extractPDFsFromMessage(eachMessage, attachmentsTempDir)
-				
 				-- Create and add the message link
 				set messageLink to my createMessageLink(eachMessage)
 				
-				-- Append email details to threadContent, including any PDF text
-				set threadContent to threadContent & "From: " & emailSender & " / Subject: " & emailSubject & " / Date: " & emailDate & linefeed & cleanedBody & linefeed & linefeed & pdfAttachmentsText & "Message Link: " & messageLink & linefeed & "---" & linefeed & linefeed
+				-- Append email details to threadContent (Corrected line break)
+				set threadContent to threadContent & "From: " & emailSender & " / Subject: " & emailSubject & " / Date: " & emailDate & linefeed & cleanedBody & linefeed & linefeed & "Message Link: " & messageLink & linefeed & "---" & linefeed & linefeed
 			end repeat
 		end tell
 		
@@ -344,22 +261,20 @@ on execute()
 		set geminiAPIKey to my getAPIKeyFromKeychain(geminiAPIKeyName)
 		if geminiAPIKey is missing value then
 			display alert "API Key Not Found" message "Please store your Gemini API Key in the Keychain with the key name '" & geminiAPIKeyName & "'." buttons {"OK"} default button "OK"
-			-- Cleanup attachments directory
-			do shell script "rm -rf " & quoted form of attachmentsTempDir
 			return
 		end if
 		
 		-- Use Python3 to make the API request to Gemini for conversation reconstruction
 		set reconstructedConversationResponse to my callGeminiAPI(geminiAPIKey, conversationPromptFilePath)
-		if reconstructedConversationResponse begins with "API request failed:" or reconstructedConversationResponse begins with "Error:" then
+		if reconstructedConversationResponse starts with "API request failed:" or reconstructedConversationResponse starts with "Error:" then
 			display alert "API Error (Conversation Reconstruction)" message reconstructedConversationResponse buttons {"OK"} default button "OK"
-			-- Cleanup attachments directory
-			do shell script "rm -rf " & quoted form of attachmentsTempDir
 			return
 		end if
 		set reconstructedConversation to reconstructedConversationResponse
 		
+		
 		-- --- Information Extraction ---
+		
 		set fullPrompt to prompt_intro & linefeed & linefeed & "Email Thread Content:" & linefeed & threadContent
 		
 		-- Generate a unique temporary file path for main prompt
@@ -370,10 +285,8 @@ on execute()
 		
 		-- Use Python3 to make the API request to Gemini for information extraction
 		set apiResponse to my callGeminiAPI(geminiAPIKey, promptFilePath) -- Re-use geminiAPIKey
-		if apiResponse begins with "API request failed:" or apiResponse begins with "Error:" then
+		if apiResponse starts with "API request failed:" or apiResponse starts with "Error:" then
 			display alert "API Error (Information Extraction)" message apiResponse buttons {"OK"} default button "OK"
-			-- Cleanup attachments directory
-			do shell script "rm -rf " & quoted form of attachmentsTempDir
 			return
 		end if
 		
@@ -384,14 +297,7 @@ on execute()
 			make new draft with properties {content:fullContent, flagged:false, tags:draftsTags} -- Use draftsTags list
 		end tell
 		
-		-- Cleanup attachments directory
-		do shell script "rm -rf " & quoted form of attachmentsTempDir
-		
 	on error errMsg number errNum
-		-- Attempt to cleanup temp attachments directory if it exists
-		try
-			if attachmentsTempDir is not missing value then do shell script "rm -rf " & quoted form of attachmentsTempDir
-		end try
 		display alert "An error occurred: " & errMsg & " (Error " & errNum & ")"
 	end try
 end execute
