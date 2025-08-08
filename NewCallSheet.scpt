@@ -1,5 +1,3 @@
-use framework "Foundation"
--- PDF text extraction uses the pdftotext CLI; PDFKit not required
 use scripting additions
 
 -- *** USER-ADJUSTABLE VARIABLES ***
@@ -55,21 +53,6 @@ on replace_chars(theText, searchString, replacementString)
 	set AppleScript's text item delimiters to ""
 	return theText
 end replace_chars
-
--- Helper function to trim whitespace from a string
-on trim(someText)
-	set nsText to current application's NSString's stringWithString:someText
-	set trimmedText to nsText's stringByTrimmingCharactersInSet:(current application's NSCharacterSet's whitespaceAndNewlineCharacterSet())
-	return trimmedText as string
-end trim
-
--- Helper function to URL-encode a string
-on urlEncode(inputString)
-	set NSString to current application's NSString's stringWithString:inputString
-	set allowedChars to current application's NSCharacterSet's URLQueryAllowedCharacterSet()
-	set encodedString to NSString's stringByAddingPercentEncodingWithAllowedCharacters:allowedChars
-	return encodedString as string
-end urlEncode
 
 -- Helper to truncate long text blocks to avoid oversized prompts
 on truncateText(someText, maxChars)
@@ -154,8 +137,9 @@ on extractPDFsFromMessage(theMessage, attachmentsTempDir)
 		end tell
 		set isPDF to false
 		if attName is not "" then
-			set lowerName to ((current application's NSString's stringWithString:attName)'s lowercaseString()) as string
-			if lowerName ends with ".pdf" then set isPDF to true
+			ignoring case
+				if attName ends with ".pdf" then set isPDF to true
+			end ignoring
 		end if
 		if attType is not "" and attType contains "pdf" then set isPDF to true
 		if isPDF then
@@ -185,12 +169,10 @@ on createMessageLink(theMessage)
 	return markdownLink
 end createMessageLink
 
--- Function to write text to a file using ASObjC
+-- Function to write text to a file (UTF-8)
 on writeToFile(theText, theFilePath)
 	try
-		set theNSString to current application's NSString's stringWithString:theText
-		set theNSData to theNSString's dataUsingEncoding:(current application's NSUTF8StringEncoding)
-		theNSData's writeToFile:theFilePath atomically:true
+		do shell script "/usr/bin/printf %s " & quoted form of theText & " > " & quoted form of theFilePath
 		return true
 	on error errMsg
 		display alert "Failed to write to file: " & errMsg
@@ -287,19 +269,11 @@ except Exception as e:
 "
 	try
 		set apiResponse to do shell script "/usr/bin/python3 -c " & quoted form of pythonScript
-		set exitCode to (do shell script "echo $?") as integer -- Get the exit code
-		
-		if exitCode is not 0 then
-			display alert "API Error" message "The Gemini API request failed.  Details:
-" & apiResponse buttons {"OK"} default button "OK"
-			return "" -- Or some other error indicator
-		end if
 		return apiResponse
-		
 	on error errMsg number errNum
 		display alert "Python Script Error" message "An error occurred in the Python script:
 " & errMsg & " (Error " & errNum & ")"
-		return "" -- Or some other error indicator
+		return ""
 	end try
 end callGeminiAPI
 
@@ -323,7 +297,7 @@ on execute()
 			end if
 			
 			set {theSender, theSubject} to {sender, subject} of first item of theRef
-			if theSubject starts with "Re: " or theSubject starts with "Réf : " then
+			if theSubject begins with "Re: " or theSubject begins with "Réf : " then
 				set AppleScript's text item delimiters to {"Re: ", "Réf : "}
 				set theSubject to last text item of theSubject
 			end if
@@ -377,7 +351,7 @@ on execute()
 		
 		-- Use Python3 to make the API request to Gemini for conversation reconstruction
 		set reconstructedConversationResponse to my callGeminiAPI(geminiAPIKey, conversationPromptFilePath)
-		if reconstructedConversationResponse starts with "API request failed:" or reconstructedConversationResponse starts with "Error:" then
+		if reconstructedConversationResponse begins with "API request failed:" or reconstructedConversationResponse begins with "Error:" then
 			display alert "API Error (Conversation Reconstruction)" message reconstructedConversationResponse buttons {"OK"} default button "OK"
 			-- Cleanup attachments directory
 			do shell script "rm -rf " & quoted form of attachmentsTempDir
@@ -396,7 +370,7 @@ on execute()
 		
 		-- Use Python3 to make the API request to Gemini for information extraction
 		set apiResponse to my callGeminiAPI(geminiAPIKey, promptFilePath) -- Re-use geminiAPIKey
-		if apiResponse starts with "API request failed:" or apiResponse starts with "Error:" then
+		if apiResponse begins with "API request failed:" or apiResponse begins with "Error:" then
 			display alert "API Error (Information Extraction)" message apiResponse buttons {"OK"} default button "OK"
 			-- Cleanup attachments directory
 			do shell script "rm -rf " & quoted form of attachmentsTempDir
