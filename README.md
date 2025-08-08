@@ -24,7 +24,7 @@ EmailsToCallSheet is an AppleScript that automates the creation of call sheets f
 ## Configuration
 Adjust these variables in the script as needed:
 - `geminiAPIKeyName`: Name of your API key in Keychain
-- `geminiModel`: Gemini model to use (e.g., "gemini-2.0-flash")
+- `geminiModel`: Gemini model to use (e.g., "gemini-2.5-pro")
 - `draftsTag`: Tag to apply to new drafts in the Drafts app
 
 ## Usage

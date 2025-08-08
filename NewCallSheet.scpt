@@ -3,7 +3,7 @@ use scripting additions
 
 -- *** USER-ADJUSTABLE VARIABLES ***
 property geminiAPIKeyName : "Gemini_API_Key" -- Name of the API key in Keychain
-property geminiModel : "gemini-2.5-pro-exp-03-25" -- Gemini model to use (e.g., "gemini-2.5-pro-exp-03-25", "gemini-2.0-flash")
+property geminiModel : "gemini-2.5-pro" -- Gemini model to use (e.g., "gemini-2.5-pro", "gemini-2.5-flash")
 property draftsTags : {"callsheet"} -- Multiple tags to apply to the new draft in Drafts
 property prompt_intro : "You are a highly skilled administrative assistant. Your task is to create a markdown call sheet for photographer David Degner.  Extract all relevant project details from the following email thread with his client to populate the call sheet sections below.
 
