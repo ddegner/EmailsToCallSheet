@@ -1,5 +1,5 @@
 use framework "Foundation"
-use framework "PDFKit"
+-- PDF text extraction uses the pdftotext CLI; PDFKit not required
 use scripting additions
 
 -- *** USER-ADJUSTABLE VARIABLES ***
@@ -83,25 +83,47 @@ on truncateText(someText, maxChars)
 	end try
 end truncateText
 
--- Extract plain text from a PDF at the given POSIX path using PDFKit
+-- Locate pdftotext in common install paths or PATH
+on getPdftotextPath()
+	try
+		set cmdPath to do shell script "/usr/bin/which pdftotext || true"
+		if cmdPath is not "" then return cmdPath
+	on error
+		-- ignore
+	end try
+	try
+		set brewAppleSilicon to "/opt/homebrew/bin/pdftotext"
+		if (do shell script "/bin/test -x " & quoted form of brewAppleSilicon & " && echo ok || true") is "ok" then return brewAppleSilicon
+	on error
+		-- ignore
+	end try
+	try
+		set brewIntel to "/usr/local/bin/pdftotext"
+		if (do shell script "/bin/test -x " & quoted form of brewIntel & " && echo ok || true") is "ok" then return brewIntel
+	on error
+		-- ignore
+	end try
+	return ""
+end getPdftotextPath
+
+-- Extract plain text from a PDF at the given POSIX path using the pdftotext CLI
 on extractTextFromPDF(pdfPOSIXPath)
 	try
-		set pdfURL to current application's |NSURL|'s fileURLWithPath:pdfPOSIXPath
-		set pdfDoc to current application's PDFDocument's alloc()'s initWithURL:pdfURL
-		if pdfDoc is missing value then return ""
-		set pageCount to (pdfDoc's pageCount()) as integer
-		if pageCount ≤ 0 then return ""
-		set collectedText to ""
-		repeat with i from 0 to (pageCount - 1)
-			set pageObj to (pdfDoc's pageAtIndex:i)
-			if pageObj is not missing value then
-				set pageText to (pageObj's string())
-				if pageText is not missing value then
-					set collectedText to collectedText & (pageText as string) & linefeed & linefeed
-				end if
-			end if
-		end repeat
-		return collectedText as string
+		set pdftotextPath to my getPdftotextPath()
+		if pdftotextPath is "" then return ""
+		-- Create a temp output file
+		set outPath to do shell script "mktemp /tmp/pdftotext_out.XXXXXX"
+		-- Use pdftotext to extract text with layout preserved where possible
+		try
+			do shell script quoted form of pdftotextPath & " -layout -nopgbrk " & quoted form of pdfPOSIXPath & space & quoted form of outPath
+		on error
+			-- Fallback to basic extraction
+			do shell script quoted form of pdftotextPath & space & quoted form of pdfPOSIXPath & space & quoted form of outPath
+		end try
+		set extracted to do shell script "/bin/cat " & quoted form of outPath & " | /usr/bin/sed -e 's/\r$//'"
+		-- Clean up temp file
+		do shell script "rm -f " & quoted form of outPath
+		return extracted
 	on error
 		return ""
 	end try

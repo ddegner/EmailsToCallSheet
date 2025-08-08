@@ -27,6 +27,8 @@ Adjust these variables in the script as needed:
 - `geminiModel`: Gemini model to use (e.g., "gemini-2.5-pro")
 - `draftsTag`: Tag to apply to new drafts in the Drafts app
 
+Note: This script uses the `pdftotext` CLI to extract text from PDF attachments. Install it via Homebrew with `brew install poppler` (macOS) or ensure it is available in your PATH.
+
 ## Usage
 1. Open Mail.app and select an email from the thread you want to process
 2. Run the script
