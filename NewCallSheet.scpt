@@ -1,21 +1,17 @@
--- SUMMARY: This script processes an email thread from Mail.app to create a call sheet using the Gemini API and create a Draft in the Drafts app.
--- It extracts relevant information from the emails based on predefined categories (like Client Information, Project Timeline, Location, Budget, etc.), reconstructs the email thread into a chronologically ordered conversation, and generates a markdown-formatted call sheet.
--- The output is then saved as a new draft in the Drafts app with a specified tag.
--- The script requires a Gemini API key stored in Keychain and uses Python to interact with the Gemini API.
-
 use framework "Foundation"
 use scripting additions
 
 -- *** USER-ADJUSTABLE VARIABLES ***
 property geminiAPIKeyName : "Gemini_API_Key" -- Name of the API key in Keychain
-property geminiModel : "gemini-2.0-flash"   -- Gemini model to use (e.g., "gemini-1.5-pro-002", "gemini-2.0-flash")
-property draftsTag : "1 commercial"            -- Tag to apply to the new draft in Drafts
+property geminiModel : "gemini-2.5-pro" -- Gemini model to use (e.g., "gemini-2.5-pro-exp-03-25", "gemini-2.0-flash")
+property draftsTags : {"callsheet"} -- Multiple tags to apply to the new draft in Drafts
 property prompt_intro : "You are a highly skilled administrative assistant. Your task is to create a markdown call sheet for photographer David Degner.  Extract all relevant project details from the following email thread with his client to populate the call sheet sections below.
 
 Formatting Instructions:
 
 Format the call sheet in markdown.
-The first line should be the project title (markdown title format).
+The first line should be the shoot date and the project title in the format: # YYYYMMDD - {project-title}
+If the shoot date is unknown use XXXXXXXXX in place of the YYYYMMDD.
 Include markdown headings for each of the sections listed below.
 For sections with no information from the email thread, include only the heading and leave the content blank.
 Do not include information not explicitly stated in the email thread.
@@ -23,32 +19,19 @@ Omit conversational pleasantries and sign-offs.
 Do NOT use HTML; use markdown for all text formatting.
 Section Headings and Information to Extract:
 
-CLIENT INFORMATION:  List the client or company name, main contact person (and their role, if mentioned), and relevant contact details (email, phone) directly, without labels.
-
-AGENCY: Mention the agency name and contact information if an agency is involved.
-
-PROJECT TIMELINE: Extract and list all relevant dates mentioned in the email, such as deadlines, shoot dates, and delivery timelines.
-
-LOCATION: Specify the photography location or client address.
+LOCATION: Specify the photography location or client address and start time.
 
 PROJECT DESCRIPTION: Summarize the project's key objectives, scope, and any mentioned style, goals, or focus areas.
 
-ART DIRECTION: Highlight any art direction, stylistic direction, or creative requirements.
+TEAM AND ROLES: Identify all mentioned team members, subjects and their roles.
 
-DELIVERABLES: List all required outputs (images, photos, reports, videos) with quantity, format, and deadlines.
+CLIENT INFORMATION:  List the client or company name, main contact person (and their role, if mentioned), and relevant contact details (email, phone) directly, without labels. Include the agency name and contact information if an agency is involved.
 
-BUDGET:  Extract all mentions of budgets, costs, fees, or pricing.  Include estimates, quotes, rates, and any monetary values (e.g., '$500', 'USD', 'total cost').  Capture all financial details, even if implied or indirect. Look for keywords like 'budget', 'cost', 'estimate', 'fee', 'pricing', 'cost breakdown', 'quote', 'rate'.
+PROJECT TIMELINE: List and label relevant dates mentioned in the email, such as deadlines, shoot dates, and delivery timelines.
 
-TEAM AND ROLES: Identify all mentioned team members and their roles.
+DELIVERABLES: List all required outputs (photos, videos) with quantity, format, and settings.
 
-LICENSING AND USAGE RIGHTS: Include details about licensing terms and usage rights agreements.
-
-REVISIONS OR FEEDBACK: Extract details about revision rounds, feedback, and client approval processes.
-
-SPECIAL REQUIREMENTS: Mention any special requirements (equipment, props, permits, travel, etc.).
-
-EXTRA NOTES: Capture any additional relevant information, such as meeting schedules, discussions, or extra tasks."
-
+BUDGET:  Extract all mentions of budgets, costs, fees, or pricing.  Include estimates, quotes, rates, and any monetary values (e.g., '$500', 'USD', 'total cost').  Capture all financial details, even if implied or indirect. Look for keywords like 'budget', 'cost', 'estimate', 'fee', 'pricing', 'cost breakdown', 'quote', 'rate'."
 
 property conversation_prompt_intro : "Please reconstruct the following emails into a coherent email thread, presenting the messages in the correct chronological order.  Remove any redundent quoted text or redundant email signatures.  For each message, please include the sender's name, the date, and the time the message was sent, followed by the message content.  Format each message in markdown like this:
 
@@ -64,88 +47,88 @@ Email Thread Content:"
 
 -- Function to replace characters in a string (Not strictly necessary, but kept for now)
 on replace_chars(theText, searchString, replacementString)
-    set AppleScript's text item delimiters to searchString
-    set theItems to text items of theText
-    set AppleScript's text item delimiters to replacementString
-    set theText to theItems as string
-    set AppleScript's text item delimiters to ""
-    return theText
+	set AppleScript's text item delimiters to searchString
+	set theItems to text items of theText
+	set AppleScript's text item delimiters to replacementString
+	set theText to theItems as string
+	set AppleScript's text item delimiters to ""
+	return theText
 end replace_chars
 
 -- Helper function to trim whitespace from a string
 on trim(someText)
-    set nsText to current application's NSString's stringWithString:someText
-    set trimmedText to nsText's stringByTrimmingCharactersInSet:(current application's NSCharacterSet's whitespaceAndNewlineCharacterSet())
-    return trimmedText as string
+	set nsText to current application's NSString's stringWithString:someText
+	set trimmedText to nsText's stringByTrimmingCharactersInSet:(current application's NSCharacterSet's whitespaceAndNewlineCharacterSet())
+	return trimmedText as string
 end trim
 
 -- Helper function to URL-encode a string
 on urlEncode(inputString)
-    set nsString to current application's NSString's stringWithString:inputString
-    set allowedChars to current application's NSCharacterSet's URLQueryAllowedCharacterSet()
-    set encodedString to nsString's stringByAddingPercentEncodingWithAllowedCharacters:allowedChars
-    return encodedString as string
+	set NSString to current application's NSString's stringWithString:inputString
+	set allowedChars to current application's NSCharacterSet's URLQueryAllowedCharacterSet()
+	set encodedString to NSString's stringByAddingPercentEncodingWithAllowedCharacters:allowedChars
+	return encodedString as string
 end urlEncode
 
 -- Function to create a message link for a given message
 on createMessageLink(theMessage)
-    tell application "Mail"
-        set messageId to message id of theMessage
-        set messageSubject to subject of theMessage
-    end tell
-    set messageLink to "message://%3c" & messageId & "%3e"
-    set markdownLink to "[" & messageSubject & "](" & messageLink & ")"
-    return markdownLink
+	tell application "Mail"
+		set messageId to message id of theMessage
+		set messageSubject to subject of theMessage
+	end tell
+	set messageLink to "message://%3c" & messageId & "%3e"
+	set markdownLink to "[" & messageSubject & "](" & messageLink & ")"
+	return markdownLink
 end createMessageLink
 
 -- Function to write text to a file using ASObjC
 on writeToFile(theText, theFilePath)
-    try
-        set theNSString to current application's NSString's stringWithString:theText
-        set theNSData to theNSString's dataUsingEncoding:(current application's NSUTF8StringEncoding)
-        theNSData's writeToFile:theFilePath atomically:true
-        return true
-    on error errMsg
-        display alert "Failed to write to file: " & errMsg
-        return false
-    end try
+	try
+		set theNSString to current application's NSString's stringWithString:theText
+		set theNSData to theNSString's dataUsingEncoding:(current application's NSUTF8StringEncoding)
+		theNSData's writeToFile:theFilePath atomically:true
+		return true
+	on error errMsg
+		display alert "Failed to write to file: " & errMsg
+		return false
+	end try
 end writeToFile
 
 -- Function to retrieve API key from Keychain
 on getAPIKeyFromKeychain(keyName)
-    try
-        set apiKey to do shell script "security find-generic-password -w -s " & quoted form of keyName
-        return apiKey
-    on error
-        return missing value
-    end try
+	try
+		set apiKey to do shell script "security find-generic-password -w -s " & quoted form of keyName
+		return apiKey
+	on error
+		return missing value
+	end try
 end getAPIKeyFromKeychain
 
 -- Function to sort messages by date using a custom sort
 on sortMessagesByDate(messageList)
-    set sortedMessages to messageList
-    set messageCount to count of sortedMessages
-    tell application "Mail"
-        repeat with i from 1 to (messageCount - 1)
-            repeat with j from (i + 1) to messageCount
-                set messageI to item i of sortedMessages
-                set messageJ to item j of sortedMessages
-                set dateI to date received of messageI
-                set dateJ to date received of messageJ
-                if dateI > dateJ then
-                    -- Swap the messages
-                    set item i of sortedMessages to messageJ
-                    set item j of sortedMessages to messageI
-                end if
-            end repeat
-        end repeat
-    end tell
-    return sortedMessages
+	set sortedMessages to messageList
+	set messageCount to count of sortedMessages
+	tell application "Mail"
+		repeat with i from 1 to (messageCount - 1)
+			repeat with j from (i + 1) to messageCount
+				set messageI to item i of sortedMessages
+				set messageJ to item j of sortedMessages
+				set dateI to date received of messageI
+				set dateJ to date received of messageJ
+				if dateI > dateJ then
+					-- Swap the messages
+					set item i of sortedMessages to messageJ
+					set item j of sortedMessages to messageI
+				end if
+			end repeat
+		end repeat
+	end tell
+	return sortedMessages
 end sortMessagesByDate
 
 -- Function to call Gemini API using Python (Corrected quotes and error handling)
 on callGeminiAPI(apiKey, promptFilePath)
-    set pythonScript to "
+	set pythonScript to "
 import json
 import urllib.request
 import urllib.error
@@ -198,123 +181,125 @@ except Exception as e:
     sys.exit(1) # Exit with a generic error code
 
 "
-    try
-        set apiResponse to do shell script "/usr/bin/python3 -c " & quoted form of pythonScript
-        set exitCode to (do shell script "echo $?") as integer -- Get the exit code
+	try
+		set apiResponse to do shell script "/usr/bin/python3 -c " & quoted form of pythonScript
+		set exitCode to (do shell script "echo $?") as integer -- Get the exit code
 
-        if exitCode is not 0 then
-            display alert "API Error" message "The Gemini API request failed.  Details:\n" & apiResponse buttons {"OK"} default button "OK"
-            return "" -- Or some other error indicator
-        end if
-        return apiResponse
+		if exitCode is not 0 then
+			display alert "API Error" message "The Gemini API request failed.  Details:
+" & apiResponse buttons {"OK"} default button "OK"
+			return "" -- Or some other error indicator
+		end if
+		return apiResponse
 
-    on error errMsg number errNum
-        display alert "Python Script Error" message "An error occurred in the Python script:\n" & errMsg & " (Error " & errNum & ")"
-        return ""  -- Or some other error indicator
-    end try
+	on error errMsg number errNum
+		display alert "Python Script Error" message "An error occurred in the Python script:
+" & errMsg & " (Error " & errNum & ")"
+		return "" -- Or some other error indicator
+	end try
 end callGeminiAPI
 
 
 -- Function to execute the main script
 on execute()
-    try
-        tell application "Mail"
-            -- Get the related messages
-            if not (exists message viewer 1) then
-                display alert "No message viewer" message "Please open Mail and select a message." buttons {"OK"} default button "OK"
-                return
-            end if
+	try
+		tell application "Mail"
+			-- Get the related messages
+			if not (exists message viewer 1) then
+				display alert "No message viewer" message "Please open Mail and select a message." buttons {"OK"} default button "OK"
+				return
+			end if
 
-            set theRef to (selected messages of message viewer 1)
-            if theRef is {} then
-                display alert "No email selected" message "Please select an email thread." buttons {"OK"} default button "OK"
-                return
-            end if
+			set theRef to (selected messages of message viewer 1)
+			if theRef is {} then
+				display alert "No email selected" message "Please select an email thread." buttons {"OK"} default button "OK"
+				return
+			end if
 
-            set {theSender, theSubject} to {sender, subject} of first item of theRef
-            if theSubject starts with "Re: " or theSubject starts with "Réf : " then
-                set AppleScript's text item delimiters to {"Re: ", "Réf : "}
-                set theSubject to last text item of theSubject
-            end if
+			set {theSender, theSubject} to {sender, subject} of first item of theRef
+			if theSubject starts with "Re: " or theSubject starts with "Réf : " then
+				set AppleScript's text item delimiters to {"Re: ", "Réf : "}
+				set theSubject to last text item of theSubject
+			end if
 
-            set relatedMessages to messages of message viewer 1 where all headers contains theSender and all headers contains theSubject
+			set relatedMessages to messages of message viewer 1 where all headers contains theSender and all headers contains theSubject
 
-            -- Sort the messages by date received
-            set sortedMessages to my sortMessagesByDate(relatedMessages)
+			-- Sort the messages by date received
+			set sortedMessages to my sortMessagesByDate(relatedMessages)
 
-            -- Initialize variables for thread content
-            set threadContent to ""
+			-- Initialize variables for thread content
+			set threadContent to ""
 
-            -- Process the messages in sorted order
-            repeat with eachMessage in sortedMessages
-                -- Get email details
-                set emailSender to sender of eachMessage
-                set emailSubject to subject of eachMessage
-                set emailDate to date received of eachMessage
-                set emailBody to content of eachMessage
+			-- Process the messages in sorted order
+			repeat with eachMessage in sortedMessages
+				-- Get email details
+				set emailSender to sender of eachMessage
+				set emailSubject to subject of eachMessage
+				set emailDate to date received of eachMessage
+				set emailBody to content of eachMessage
 
-                -- cleanedBody is now simply emailBody (no preprocessing)
-                set cleanedBody to emailBody
+				-- cleanedBody is now simply emailBody (no preprocessing)
+				set cleanedBody to emailBody
 
-                -- Create and add the message link
-                set messageLink to my createMessageLink(eachMessage)
+				-- Create and add the message link
+				set messageLink to my createMessageLink(eachMessage)
 
-                -- Append email details to threadContent (Corrected line break)
-                set threadContent to threadContent & "From: " & emailSender & " / Subject: " & emailSubject & " / Date: " & emailDate & linefeed & cleanedBody & linefeed & linefeed & "Message Link: " & messageLink & linefeed & "---" & linefeed & linefeed
-            end repeat
-        end tell
+				-- Append email details to threadContent (Corrected line break)
+				set threadContent to threadContent & "From: " & emailSender & " / Subject: " & emailSubject & " / Date: " & emailDate & linefeed & cleanedBody & linefeed & linefeed & "Message Link: " & messageLink & linefeed & "---" & linefeed & linefeed
+			end repeat
+		end tell
 
-        -- --- Conversation Reconstruction ---
-        set fullConversationPrompt to conversation_prompt_intro & linefeed & threadContent
+		-- --- Conversation Reconstruction ---
+		set fullConversationPrompt to conversation_prompt_intro & linefeed & threadContent
 
-        -- Generate a unique temporary file path for conversation prompt
-        set conversationPromptFilePath to do shell script "mktemp /tmp/email_conversation_prompt.XXXXXX"
-        -- Write the full conversation prompt to the temporary file
-        my writeToFile(fullConversationPrompt, conversationPromptFilePath)
+		-- Generate a unique temporary file path for conversation prompt
+		set conversationPromptFilePath to do shell script "mktemp /tmp/email_conversation_prompt.XXXXXX"
+		-- Write the full conversation prompt to the temporary file
+		my writeToFile(fullConversationPrompt, conversationPromptFilePath)
 
-        -- Retrieve the Gemini API key from Keychain
-        set geminiAPIKey to my getAPIKeyFromKeychain(geminiAPIKeyName)
-        if geminiAPIKey is missing value then
-            display alert "API Key Not Found" message "Please store your Gemini API Key in the Keychain with the key name '" & geminiAPIKeyName & "'." buttons {"OK"} default button "OK"
-            return
-        end if
+		-- Retrieve the Gemini API key from Keychain
+		set geminiAPIKey to my getAPIKeyFromKeychain(geminiAPIKeyName)
+		if geminiAPIKey is missing value then
+			display alert "API Key Not Found" message "Please store your Gemini API Key in the Keychain with the key name '" & geminiAPIKeyName & "'." buttons {"OK"} default button "OK"
+			return
+		end if
 
-        -- Use Python3 to make the API request to Gemini for conversation reconstruction
-        set reconstructedConversationResponse to my callGeminiAPI(geminiAPIKey, conversationPromptFilePath)
-        if reconstructedConversationResponse starts with "API request failed:" or reconstructedConversationResponse starts with "Error:" then
-            display alert "API Error (Conversation Reconstruction)" message reconstructedConversationResponse buttons {"OK"} default button "OK"
-            return
-        end if
-        set reconstructedConversation to reconstructedConversationResponse
+		-- Use Python3 to make the API request to Gemini for conversation reconstruction
+		set reconstructedConversationResponse to my callGeminiAPI(geminiAPIKey, conversationPromptFilePath)
+		if reconstructedConversationResponse starts with "API request failed:" or reconstructedConversationResponse starts with "Error:" then
+			display alert "API Error (Conversation Reconstruction)" message reconstructedConversationResponse buttons {"OK"} default button "OK"
+			return
+		end if
+		set reconstructedConversation to reconstructedConversationResponse
 
 
-        -- --- Information Extraction ---
+		-- --- Information Extraction ---
 
-        set fullPrompt to prompt_intro & linefeed & linefeed & "Email Thread Content:" & linefeed & threadContent
+		set fullPrompt to prompt_intro & linefeed & linefeed & "Email Thread Content:" & linefeed & threadContent
 
-        -- Generate a unique temporary file path for main prompt
-        set promptFilePath to do shell script "mktemp /tmp/email_processor_prompt.XXXXXX"
+		-- Generate a unique temporary file path for main prompt
+		set promptFilePath to do shell script "mktemp /tmp/email_processor_prompt.XXXXXX"
 
-        -- Write the full prompt to the temporary file
-        my writeToFile(fullPrompt, promptFilePath)
+		-- Write the full prompt to the temporary file
+		my writeToFile(fullPrompt, promptFilePath)
 
-        -- Use Python3 to make the API request to Gemini for information extraction
-        set apiResponse to my callGeminiAPI(geminiAPIKey, promptFilePath)  -- Re-use geminiAPIKey
-        if apiResponse starts with "API request failed:" or apiResponse starts with "Error:" then
-            display alert "API Error (Information Extraction)" message apiResponse buttons {"OK"} default button "OK"
-            return
-        end if
+		-- Use Python3 to make the API request to Gemini for information extraction
+		set apiResponse to my callGeminiAPI(geminiAPIKey, promptFilePath) -- Re-use geminiAPIKey
+		if apiResponse starts with "API request failed:" or apiResponse starts with "Error:" then
+			display alert "API Error (Information Extraction)" message apiResponse buttons {"OK"} default button "OK"
+			return
+		end if
 
-        -- Create a new draft in Drafts app
-        tell application "Drafts"
-            set fullContent to "" & my replace_chars(apiResponse, return, linefeed) & linefeed & linefeed & "------------------------------------
+		-- Create a new draft in Drafts app
+		tell application "Drafts"
+			set fullContent to "" & my replace_chars(apiResponse, return, linefeed) & linefeed & linefeed & "------------------------------------
 " & reconstructedConversation
-            make new draft with properties {content:fullContent, flagged:false, tags:{draftsTag}}  -- Use draftsTag variable
-        end tell
+			make new draft with properties {content:fullContent, flagged:false, tags:draftsTags} -- Use draftsTags list
+		end tell
 
-    on error errMsg number errNum
-        display alert "An error occurred: " & errMsg & " (Error " & errNum & ")"
-    end try
+	on error errMsg number errNum
+		display alert "An error occurred: " & errMsg & " (Error " & errNum & ")"
+	end try
 end execute
 
 -- Run the execute function
