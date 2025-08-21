@@ -1,190 +1,173 @@
 use framework "Foundation"
 use scripting additions
 
--- [Previous helper functions remain unchanged: removeQuotedText, replace_chars, createMessageLink, writeToFile, getAPIKeyFromKeychain, callOpenAIAPI]
+-- ==========================================
+-- Drafts-only AppleScript Action (macOS)
+-- Amend current call sheet from selected Mail messages via Gemini
+-- Clean version: URL-scheme writeback only (no object refs)
+-- ==========================================
 
--- Improved function to extract last message date from existing content
-on getLastMessageDate(existingContent)
-    try
-        -- Look for the thread content section
-        set AppleScript's text item delimiters to "------------------"
-        set contentParts to text items of existingContent
-        if (count of contentParts) < 2 then return missing value
+-- === USER SETTINGS ===
+property geminiAPIKeyName : "Gemini_API_Key" -- Keychain service name
+property geminiModel : "gemini-2.5-pro-preview-03-25" -- Gemini model id
 
-        set threadContent to item 2 of contentParts
+on execute(d)
+	try
+		-- Current draft content + uuid from Drafts-supplied record
+		set callsheetText to ""
+		try
+			set callsheetText to (content of d)
+		on error
+			set callsheetText to ""
+		end try
+		set theUUID to my getUUIDFromRecord(d)
+		if theUUID is "" then error "Could not read the current draft UUID."
 
-        -- Find all dates in the thread content
-        set AppleScript's text item delimiters to "Date: "
-        set dateItems to text items of threadContent
+		-- Gather selected Mail messages as plain text
+		set mailText to my getSelectedMailThreadText()
+		if mailText is "" then error "No messages are selected in Mail."
 
-        -- Get the last date
-        if (count of dateItems) > 1 then
-            set lastDateText to paragraph 1 of item -1 of dateItems
-            -- Remove any trailing text after the date
-            set AppleScript's text item delimiters to linefeed
-            set lastDateText to paragraph 1 of lastDateText
-            return date lastDateText
-        end if
+		-- Build prompt merging existing call sheet and new emails
+		set promptText to my buildPrompt(callsheetText, mailText)
 
-        return missing value
-    on error
-        return missing value
-    end try
-end getLastMessageDate
+		-- Call Gemini for updated call sheet markdown
+		set updatedText to my callGemini(promptText)
+		if updatedText is "" then error "Gemini returned empty text."
 
--- New function to validate call sheet format
-on validateCallSheet(content)
-    try
-        -- Check for required sections
-        set requiredSections to {"CLIENT INFORMATION:", "PROJECT TIMELINE:", "PROJECT DESCRIPTION:", "DELIVERABLES:", "BUDGET:"}
-        set foundSections to 0
+		-- Write back to THIS draft using Drafts URL scheme only
+		set encodedText to my encodeURIComponent(updatedText)
+		set L to (length of callsheetText)
+		if L < 0 then set L to 0
+		set u to "drafts://x-callback-url/replaceRange?uuid=" & theUUID & "&text=" & encodedText & "&start=0&length=" & (L as text)
+		open location u
 
-        repeat with section in requiredSections
-            if content contains section then
-                set foundSections to foundSections + 1
-            end if
-        end repeat
-
-        -- Also check for the thread content separator
-        if content contains "------------------" then
-            set foundSections to foundSections + 1
-        end if
-
-        -- Return true if we found most of the expected sections
-        return foundSections ≥ 4
-    on error
-        return false
-    end try
-end validateCallSheet
-
--- New function to sort messages by date
-on sortMessagesByDate(messageList)
-    set sortedMessages to messageList
-    set messageCount to count of sortedMessages
-    tell application "Mail"
-        repeat with i from 1 to (messageCount - 1)
-            repeat with j from (i + 1) to messageCount
-                set messageI to item i of sortedMessages
-                set messageJ to item j of sortedMessages
-                if date received of messageI > date received of messageJ then
-                    set item i of sortedMessages to messageJ
-                    set item j of sortedMessages to messageI
-                end if
-            end repeat
-        end repeat
-    end tell
-    return sortedMessages
-end sortMessagesByDate
-
-on execute()
-    try
-        tell application "Drafts"
-            -- Get and validate selected draft
-            set selectedDraft to first draft where selected is true
-            if selectedDraft is missing value then
-                display alert "No draft selected" message "Please select a call sheet to update." buttons {"OK"} default button "OK"
-                return
-            end if
-
-            set existingContent to content of selectedDraft
-
-            -- Validate call sheet format
-            if not my validateCallSheet(existingContent) then
-                display alert "Invalid Call Sheet" message "The selected draft doesn't appear to be a valid call sheet." buttons {"OK"} default button "OK"
-                return
-            end if
-
-            -- Get the last message date
-            set lastMessageDate to my getLastMessageDate(existingContent)
-
-            tell application "Mail"
-                set selectedMessages to selection
-                if selectedMessages is {} then
-                    display alert "No email selected" message "Please select the email thread." buttons {"OK"} default button "OK"
-                    return
-                end if
-
-                -- Sort and filter new messages
-                set sortedMessages to my sortMessagesByDate(selectedMessages)
-                set newMessages to {}
-                repeat with msg in sortedMessages
-                    if lastMessageDate is missing value or (date received of msg) > lastMessageDate then
-                        set end of newMessages to msg
-                    end if
-                end repeat
-
-                if newMessages is {} then
-                    display alert "No new messages" message "All selected messages are already included in the call sheet." buttons {"OK"} default button "OK"
-                    return
-                end if
-
-                -- Process new messages
-                set newThreadContent to ""
-                repeat with msg in newMessages
-                    set emailSender to sender of msg
-                    set emailSubject to subject of msg
-                    set emailDate to date received of msg
-                    set emailBody to content of msg
-                    set cleanedBody to my removeQuotedText(emailBody)
-                    set messageLink to my createMessageLink(msg)
-
-                    set newThreadContent to newThreadContent & "From: " & emailSender & " / Subject: " & emailSubject & " / Date: " & emailDate & linefeed & cleanedBody & linefeed & "Message Link: " & messageLink & linefeed & "---" & linefeed & linefeed
-                end repeat
-            end tell
-
-            -- Enhanced update prompt
-            set updatePrompt to "Update this call sheet with new information from the email thread. Follow these rules:
-
-1. Keep the existing project title on the first line
-2. Maintain all section headings
-3. Add new information to appropriate sections
-4. Only replace information if explicitly updated in new emails
-5. For dates and timelines, keep historical dates and add new ones
-6. For budgets, maintain history of all costs/changes
-7. Keep all unchanged information exactly as is
-
-Current Call Sheet:
-" & existingContent & "
-
-New Emails to Incorporate:
-" & newThreadContent
-
-            -- Generate temp file path and write prompt
-            set promptFilePath to do shell script "mktemp /tmp/callsheet_update_prompt.XXXXXX"
-            if not my writeToFile(updatePrompt, promptFilePath) then
-                error "Failed to write prompt to temporary file"
-            end if
-
-            -- Get API key and make request
-            set openAIAPIKey to my getAPIKeyFromKeychain("OpenAI_API_Key")
-            if openAIAPIKey is missing value then
-                display alert "API Key Not Found" message "Please store your OpenAI API Key in the Keychain." buttons {"OK"} default button "OK"
-                return
-            end if
-
-            set apiResponse to my callOpenAIAPI(openAIAPIKey, promptFilePath)
-            if apiResponse starts with "API request failed:" then
-                display alert "API Error" message apiResponse buttons {"OK"} default button "OK"
-                return
-            end if
-
-            -- Validate response before updating
-            if not my validateCallSheet(apiResponse) then
-                display alert "Invalid Response" message "The API response doesn't match the expected call sheet format." buttons {"OK"} default button "OK"
-                return
-            end if
-
-            -- Update the draft
-            set content of selectedDraft to apiResponse
-
-            -- Clean up temp file
-            do shell script "rm " & quoted form of promptFilePath
-
-        end tell
-
-    on error errMsg number errNum
-        display alert "An error occurred: " & errMsg & " (Error " & errNum & ")"
-    end try
+		return ""
+	on error errMsg number errNum
+		display dialog ("An error occurred: " & errMsg & " (" & errNum & ")") buttons {"OK"} default button 1 with icon caution
+		return ""
+	end try
 end execute
 
-execute()
+
+on getSelectedMailThreadText()
+	-- Returns concatenated plain text for selected messages in Mail.
+	set msgList to {}
+	tell application "Mail"
+		try
+			set msgList to selected messages of message viewer 1
+		on error
+			set msgList to {}
+		end try
+		if msgList is {} then return ""
+		set collected to {}
+		repeat with msg in msgList
+			set fromLine to "From: " & (sender of msg as text)
+			set dateLine to "Date: " & ((date sent of msg) as text)
+			set subjLine to "Subject: " & (subject of msg as text)
+			set bodyText to (content of msg as text)
+			set entry to fromLine & return & dateLine & return & subjLine & return & return & bodyText
+			set end of collected to entry
+		end repeat
+	end tell
+	set oldTID to AppleScript's text item delimiters
+	set AppleScript's text item delimiters to (return & return & "----- EMAIL BREAK -----" & return & return)
+	set joined to collected as text
+	set AppleScript's text item delimiters to oldTID
+	return joined
+end getSelectedMailThreadText
+
+
+on buildPrompt(existingCallsheet, newEmails)
+	set intro to "You are a meticulous production coordinator. Update the EXISTING CALL SHEET with any new information found in the NEW EMAIL THREAD. Keep the existing structure and formatting. Only change fields when the new emails provide definitive updates; otherwise leave them as-is. If a field is missing and the emails provide new information, fill it in."
+	set rules to "Update the section titled 'Chronological Email List' by appending only entries for emails NOT already present. Do not duplicate existing items. Preserve and replicate current markdown headings, formatting and spacing and order emails oldest→newest. Output ONLY the updated call sheet and emails; no extra commentary."
+	set s to intro & return & return & rules & return & return & "===== EXISTING CALL SHEET =====" & return & existingCallsheet & return & "===== END EXISTING CALL SHEET =====" & return & return & "===== NEW EMAIL THREAD =====" & return & newEmails & return & "===== END NEW EMAIL THREAD ====="
+	return s
+end buildPrompt
+
+
+on callGemini(promptText)
+	set apiKey to my readKeychain(geminiAPIKeyName)
+	if apiKey is "" then error "Gemini API key not found in Keychain (service: " & geminiAPIKeyName & ")."
+
+	-- Build request JSON with Cocoa (safe escaping)
+	set dict to current application's NSMutableDictionary's dictionary()
+	set contentsArr to current application's NSMutableArray's array()
+
+	set partsArr to current application's NSMutableArray's array()
+	set partDict to current application's NSMutableDictionary's dictionary()
+	partDict's setObject:promptText forKey:"text"
+	partsArr's addObject:partDict
+
+	set contentDict to current application's NSMutableDictionary's dictionary()
+	contentDict's setObject:"user" forKey:"role"
+	contentDict's setObject:partsArr forKey:"parts"
+	contentsArr's addObject:contentDict
+
+	dict's setObject:contentsArr forKey:"contents"
+
+	set genCfg to current application's NSMutableDictionary's dictionary()
+	genCfg's setObject:(current application's NSNumber's numberWithDouble:0.2) forKey:"temperature"
+	genCfg's setObject:(current application's NSNumber's numberWithInteger:16384) forKey:"maxOutputTokens"
+	dict's setObject:genCfg forKey:"generationConfig"
+
+	set jsonData to current application's NSJSONSerialization's dataWithJSONObject:dict options:0 |error|:(missing value)
+	set jsonString to (current application's NSString's alloc()'s initWithData:jsonData encoding:(current application's NSUTF8StringEncoding)) as text
+
+	-- Header-based API key; avoid 'url' var name
+	set endpointStr to "https://generativelanguage.googleapis.com/v1beta/models/" & geminiModel & ":generateContent"
+	set curlCmd to "/usr/bin/curl -sS -X POST -H 'Content-Type: application/json' -H " & quoted form of ("x-goog-api-key: " & apiKey) & " --data " & quoted form of jsonString & " " & quoted form of endpointStr
+	set respText to do shell script curlCmd
+
+	-- Parse response JSON and extract concatenated text parts
+	set respNSString to current application's NSString's stringWithString:respText
+	set respData to respNSString's dataUsingEncoding:(current application's NSUTF8StringEncoding)
+	set respObj to current application's NSJSONSerialization's JSONObjectWithData:respData options:0 |error|:(missing value)
+
+	set candidates to respObj's objectForKey:"candidates"
+	if (candidates = missing value) or ((candidates's |count|()) = 0) then error "Gemini returned no candidates."
+	set firstCand to candidates's objectAtIndex:0
+	set contentDict2 to firstCand's objectForKey:"content"
+	set partsArray2 to contentDict2's objectForKey:"parts"
+	if (partsArray2's |count|()) = 0 then error "Gemini returned no text parts."
+	set outText to ""
+	repeat with i from 0 to ((partsArray2's |count|()) - 1)
+		set p to (partsArray2's objectAtIndex:i)
+		set t to p's objectForKey:"text"
+		if t is not missing value then set outText to outText & (t as text)
+	end repeat
+	return outText as text
+end callGemini
+
+
+on readKeychain(serviceName)
+	set cmd to "security find-generic-password -s " & quoted form of serviceName & " -w"
+	try
+		set k to do shell script cmd
+		return k
+	on error
+		return ""
+	end try
+end readKeychain
+
+
+on encodeURIComponent(t)
+	set ns to current application's NSString's stringWithString:t
+	set allowed to current application's NSCharacterSet's URLQueryAllowedCharacterSet()
+	set m to allowed's mutableCopy()
+	m's removeCharactersInString:"&=?+" -- conservative for query values
+	set enc to ns's stringByAddingPercentEncodingWithAllowedCharacters:m
+	return enc as text
+end encodeURIComponent
+
+
+on getUUIDFromRecord(r)
+	try
+		return |uuid| of r
+	on error
+		try
+			return uuid of r
+		on error
+			return ""
+		end try
+	end try
+end getUUIDFromRecord
