@@ -2,7 +2,7 @@ use framework "Foundation"
 use scripting additions
 
 -- =====================================================
--- Drafts: Mail → Call Sheet (Gemini) — clean version
+-- Drafts: Mail → Call Sheet
 -- =====================================================
 -- Notes for Drafts AppleScript actions (macOS):
 --  • Drafts calls `on execute(d)` automatically. Do NOT call execute() at top level.
@@ -13,7 +13,7 @@ use scripting additions
 
 -- *** USER SETTINGS ***
 property geminiAPIKeyName : "Gemini_API_Key" -- Keychain service name for the Gemini API key
-property geminiModel : "gemini-2.5-pro" -- Primary model
+property geminiModel : "gemini-3-flash-preview" -- Primary model
 property draftsTags : {"callsheet"}
 property maxMessagesPerThread : 50 -- Cap to limit token/latency
 property showAlerts : true -- Set false to suppress display alerts when running from Drafts
@@ -82,21 +82,42 @@ on trim(someText)
 	return trimmedText as string
 end trim
 
+on lowerText(someText)
+	set nsText to current application's NSString's stringWithString:(someText as text)
+	return (nsText's lowercaseString()) as text
+end lowerText
+
 on normalizeSubject(s)
-	set t to s as text
-	repeat
-		if t begins with "Re: " then
-			set t to text 5 thru -1 of t
-		else if t begins with "RE: " then
-			set t to text 5 thru -1 of t
-		else if t begins with "Fwd: " then
-			set t to text 6 thru -1 of t
-		else if t begins with "FW: " then
-			set t to text 4 thru -1 of t
+	set t to my trim(s as text)
+	
+	-- Strip leading bracket tags like [EXTERNAL], [EXT], [SECURE], etc. (repeatable)
+	repeat while (t begins with "[")
+		set closePos to offset of "]" in t
+		if closePos > 0 then
+			try
+				set t to my trim(text (closePos + 1) thru -1 of t)
+			on error
+				exit repeat
+			end try
 		else
 			exit repeat
 		end if
 	end repeat
+	
+	-- Strip repeated prefixes (case-insensitive), allowing optional space after colon
+	repeat
+		set lc to my lowerText(t)
+		if lc begins with "re:" then
+			set t to my trim(text 4 thru -1 of t)
+		else if lc begins with "fw:" then
+			set t to my trim(text 4 thru -1 of t)
+		else if lc begins with "fwd:" then
+			set t to my trim(text 5 thru -1 of t)
+		else
+			exit repeat
+		end if
+	end repeat
+	
 	return my trim(t)
 end normalizeSubject
 
@@ -109,18 +130,6 @@ on createMessageLink(theMessage)
 	set markdownLink to "[" & messageSubject & "](" & messageLink & ")"
 	return markdownLink
 end createMessageLink
-
-on writeToFile(theText, theFilePath)
-	try
-		set theNSString to current application's NSString's stringWithString:theText
-		set theNSData to theNSString's dataUsingEncoding:(current application's NSUTF8StringEncoding)
-		theNSData's writeToFile:theFilePath atomically:true
-		return true
-	on error errMsg
-		my showAlert("File Write Failed", errMsg)
-		return false
-	end try
-end writeToFile
 
 on getAPIKeyFromKeychain(keyName)
 	try
@@ -167,36 +176,72 @@ on dedupeByMessageID(messageList)
 end dedupeByMessageID
 
 -- =============================
--- Gemini call via Python (stdout returns text)
--- Uses /usr/bin/env to find python3 across typical paths.
+-- Gemini call via curl + Cocoa JSON (no Python dependency)
 -- =============================
 
-on callGeminiAPI(apiKey, promptFilePath, modelName)
-	set py to "import json, sys, urllib.request, urllib.error\n" & ¬
-		"api_key = " & quoted form of apiKey & "\n" & ¬
-		"model = " & quoted form of modelName & "\n" & ¬
-		"path = " & quoted form of promptFilePath & "\n" & ¬
-		"with open(path, 'r', encoding='utf-8') as f:\n    prompt = f.read()\n" & ¬
-		"url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}'\n" & ¬
-		"payload = {'contents': [{'parts': [{'text': prompt}]}]}\n" & ¬
-		"headers = {'Content-Type': 'application/json'}\n" & ¬
-		"req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)\n" & ¬
-		"try:\n" & ¬
-		"    with urllib.request.urlopen(req) as response:\n" & ¬
-		"        j = json.loads(response.read().decode('utf-8'))\n" & ¬
-		"        print(j['candidates'][0]['content']['parts'][0]['text'])\n" & ¬
-		"except urllib.error.HTTPError as e:\n" & ¬
-		"    sys.stderr.write(e.read().decode('utf-8'))\n    sys.exit(e.code)\n" & ¬
-		"except Exception as e:\n" & ¬
-		"    sys.stderr.write(str(e))\n    sys.exit(1)\n"
+on callGeminiAPI(apiKey, promptText, modelName)
+	-- Build request JSON with Cocoa (safe escaping)
+	set dict to current application's NSMutableDictionary's dictionary()
+	set contentsArr to current application's NSMutableArray's array()
+	
+	set partsArr to current application's NSMutableArray's array()
+	set partDict to current application's NSMutableDictionary's dictionary()
+	partDict's setObject:promptText forKey:"text"
+	partsArr's addObject:partDict
+	
+	set contentDict to current application's NSMutableDictionary's dictionary()
+	contentDict's setObject:"user" forKey:"role"
+	contentDict's setObject:partsArr forKey:"parts"
+	contentsArr's addObject:contentDict
+	
+	dict's setObject:contentsArr forKey:"contents"
+	
+	set genCfg to current application's NSMutableDictionary's dictionary()
+	genCfg's setObject:(current application's NSNumber's numberWithDouble:0.2) forKey:"temperature"
+	genCfg's setObject:(current application's NSNumber's numberWithInteger:16384) forKey:"maxOutputTokens"
+	dict's setObject:genCfg forKey:"generationConfig"
+	
+	set jsonData to current application's NSJSONSerialization's dataWithJSONObject:dict options:0 |error|:(missing value)
+	set jsonString to (current application's NSString's alloc()'s initWithData:jsonData encoding:(current application's NSUTF8StringEncoding)) as text
+	
+	-- Call Gemini API via curl with header-based auth
+	set endpointStr to "https://generativelanguage.googleapis.com/v1beta/models/" & modelName & ":generateContent"
+	set curlCmd to "/usr/bin/curl -sS -X POST -H 'Content-Type: application/json' -H " & quoted form of ("x-goog-api-key: " & apiKey) & " --data " & quoted form of jsonString & " " & quoted form of endpointStr
+	
 	try
-		set cmd to "/usr/bin/env -i PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin python3 -c " & quoted form of py
-		set apiResponse to do shell script cmd
-		return apiResponse
+		set respText to do shell script curlCmd
 	on error errMsg number errNum
-		my showAlert("Python Script Error", "An error occurred in the Python script:\n" & errMsg & " (Error " & errNum & ")")
+		my showAlert("Curl Error", "Failed to call Gemini API:\n" & errMsg & " (Error " & errNum & ")")
 		return ""
 	end try
+	
+	-- Parse response JSON and extract concatenated text parts
+	set respNSString to current application's NSString's stringWithString:respText
+	set respData to respNSString's dataUsingEncoding:(current application's NSUTF8StringEncoding)
+	set respObj to current application's NSJSONSerialization's JSONObjectWithData:respData options:0 |error|:(missing value)
+	
+	set candidates to respObj's objectForKey:"candidates"
+	if (candidates = missing value) or ((candidates's |count|()) = 0) then
+		my showAlert("Gemini Error", "Gemini returned no candidates. Response:\n" & respText)
+		return ""
+	end if
+	
+	set firstCand to candidates's objectAtIndex:0
+	set contentDict2 to firstCand's objectForKey:"content"
+	set partsArray2 to contentDict2's objectForKey:"parts"
+	if (partsArray2's |count|()) = 0 then
+		my showAlert("Gemini Error", "Gemini returned no text parts.")
+		return ""
+	end if
+	
+	set outText to ""
+	repeat with i from 0 to ((partsArray2's |count|()) - 1)
+		set p to (partsArray2's objectAtIndex:i)
+		set t to p's objectForKey:"text"
+		if t is not missing value then set outText to outText & (t as text)
+	end repeat
+	
+	return outText
 end callGeminiAPI
 
 -- =============================
@@ -261,8 +306,6 @@ on execute(d)
 
 		-- 1) Reconstruct the conversation for cleaner extraction
 		set conversationPrompt to conversation_prompt_intro & linefeed & threadContent
-		set conversationPromptFilePath to do shell script "mktemp /tmp/email_conversation_prompt.XXXXXX"
-		my writeToFile(conversationPrompt, conversationPromptFilePath)
 
 		set geminiAPIKey to my getAPIKeyFromKeychain(geminiAPIKeyName)
 		if geminiAPIKey is missing value then
@@ -270,15 +313,13 @@ on execute(d)
 			return ""
 		end if
 
-		set reconstructedConversation to my callGeminiAPI(geminiAPIKey, conversationPromptFilePath, geminiModel)
+		set reconstructedConversation to my callGeminiAPI(geminiAPIKey, conversationPrompt, geminiModel)
 		if reconstructedConversation is "" then return ""
 
 		-- 2) Information extraction for the call sheet, using the reconstructed conversation
 		set extractionPrompt to prompt_intro & linefeed & linefeed & "Reconstructed Email Thread:" & linefeed & reconstructedConversation
-		set promptFilePath to do shell script "mktemp /tmp/email_processor_prompt.XXXXXX"
-		my writeToFile(extractionPrompt, promptFilePath)
 
-		set callSheetText to my callGeminiAPI(geminiAPIKey, promptFilePath, geminiModel)
+		set callSheetText to my callGeminiAPI(geminiAPIKey, extractionPrompt, geminiModel)
 		if callSheetText is "" then return ""
 
 		-- Normalize line endings, compose final draft content

@@ -4,12 +4,12 @@ use scripting additions
 -- ==========================================
 -- Drafts-only AppleScript Action (macOS)
 -- Amend current call sheet from selected Mail messages via Gemini
--- Clean version: URL-scheme writeback only (no object refs)
+-- Simple version: URL-scheme writeback only (no object refs)
 -- ==========================================
 
 -- === USER SETTINGS ===
 property geminiAPIKeyName : "Gemini_API_Key" -- Keychain service name
-property geminiModel : "gemini-2.5-pro-preview-03-25" -- Gemini model id
+property geminiModel : "gemini-3-flash-preview" -- Gemini model id
 
 on execute(d)
 	try
@@ -58,6 +58,13 @@ on getSelectedMailThreadText()
 		on error
 			set msgList to {}
 		end try
+		if msgList is {} then
+			try
+				set msgList to selection
+			on error
+				set msgList to {}
+			end try
+		end if
 		if msgList is {} then return ""
 		set collected to {}
 		repeat with msg in msgList
